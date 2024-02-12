@@ -1,0 +1,183 @@
+---
+title: "Intro_to_MAF"
+date: "2024-01-19"
+---
+
+***Deliverables***
+-Upload this R Notebook to your GitHub and submit the link to your Repo on BB.
+-Include any graphs or figures created in this assignment in the folder with your R notebook with descriptive file names.
+
+Since this is an optional partner activity, it is okay if your answers are the same as your partner’s as long as everyone understands it and could explain it in their own words if asked. Each person must individually push their code to Github. *At the top of your R Notebook, write the name of you and your partner(s) as a comment.*
+
+***Complete the following coding activity and answer any following questions as comments in your R Notebook***
+
+In MAF_Tutorial.Rmd, you looked at how to analyze mutation data in terms of clinical variables as well as mutation status. In this assignment, you will need to combine the two skills to demonstrate your understanding of categorical variables and R data structures.
+
+*Pre-Assignment*
+Load all necessary packages, read in the clinical data .csv file you have in your analysis_data folder, and instantiate the MAF_object.
+```{r}
+knitr::opts_knit$set(root.dir = normalizePath("/analysis_data/"))
+
+library(BiocManager)
+library(TCGAbiolinks)
+library(maftools)
+
+clinical <- read.csv("/analysis_data/skcm_clinical_data.csv")
+colnames(clinical)[ colnames(clinical) == "bcr_patient_barcode" ] <- "Tumor_Sample_Barcode"
+write.csv(clinical, "/analysis_data/skcm_clinical_data.csv", row.names = FALSE)
+
+```
+
+```{r}
+maf_query <- GDCquery(
+    project = "TCGA-SKCM", 
+    data.category = "Simple Nucleotide Variation", 
+    access = "open", # we only have access to somatic mutations which are open access
+    data.type = "Masked Somatic Mutation", 
+    workflow.type = "Aliquot Ensemble Somatic Variant Merging and Masking"
+)
+
+#GDCdownload(maf_query) # you shouldn't have to redownload any data!
+
+maf <- GDCprepare(maf_query, directory = "/analysis_data/GDCdata/") # as long as it runs, ignore any errors
+
+maf_object <- read.maf(maf = maf, 
+                       clinicalData = clinical,
+                       isTCGA = TRUE)
+```
+
+
+*1*
+Choose a clinical variable to separate your populations into two different groups and rewrite the column or create a new column with that variable as a factor. ***Do not use age or vital_status as your clinical variable.*** Hint: if your variable is continuous, you will need to determine your own cutoffs for the different levels of the factor. If your variable is categorical and has more than two possible values, choose the two that are the most common.
+```{r}
+# Convert the gender column to factors.
+maf_object@clinical.data$gender <- as.factor(maf_object@clinical.data$gender)
+```
+
+
+*2*
+Create a co-oncoplot with the top 10-20 (you choose) most mutated genes for the two groups. Pick one that has a large discrepancy in % mutated or type of mutations between the groups and research it. 
+Research it. What is the gene used for? Can you think of any reason for the discrepancy?
+```{r}
+# Subset a new MAF object with male patient data.
+male_mask <- maf_object@clinical.data$gender == "MALE"
+male_barcodes <- maf_object@clinical.data$Tumor_Sample_Barcode[male_mask]
+male_maf <- subsetMaf(maf = maf_object,
+                      tsb = male_barcodes)
+
+# Subset a new MAF object with female patient data.
+female_mask <- maf_object@clinical.data$gender == "FEMALE"
+female_barcodes <- maf_object@clinical.data$Tumor_Sample_Barcode[female_mask]
+female_maf <- subsetMaf(maf = maf_object,
+                      tsb = female_barcodes)
+
+# Draw co-oncoplot by patient gender.
+coOncoplot(m1 = male_maf, 
+           m2 = female_maf, 
+           m1Name = "Male Patients", 
+           m2Name = "Female Patients", 
+           borderCol = NA)
+
+# Save co-oncoplot.
+ggsave("~/2023-2024 USC/Spring 2024/QBIO 490/qbio_490_justinwang/week5_genomic/PCLO_coOnco.png")
+
+# Chosen gene: PCLO
+```
+
+*3*
+Create a contingency table with your variable and chosen gene. Run a Fisher’s Exact Test between presence of mutations for that gene and your clinical variable. Create and save a mosaic plot. 
+Interpret the output of the Fisher’s Exact Test in terms of the odds ratio and p-value.
+```{r}
+# Subset a new MAF with only PCLO-mutated patients.
+PCLO_maf <- subsetMaf(maf = maf_object,
+                       genes = "PCLO")
+
+# Create a new column in the original MAF's clinical dataframe to reflect PCLO mutation status.
+maf_object@clinical.data$PCLO_status <- ifelse(maf_object@clinical.data$Tumor_Sample_Barcode %in% PCLO_maf@clinical.data$Tumor_Sample_Barcode,
+                                               "Positive",
+                                               "Negative")
+
+# Arrange factor levels for PCLO mutation status.
+maf_object@clinical.data$PCLO_status <- factor(maf_object@clinical.data$PCLO_status,
+                                               levels = c("Positive", "Negative"))
+
+# Generate contingency table and draw mosaic plot.
+contig <- table(maf_object@clinical.data$gender, maf_object@clinical.data$PCLO_status)
+mosaicplot(contig, 
+           main = "PCLO Mutation Status and Patient Gender", 
+           xlab = "Gender", 
+           ylab = "Mutation Status",
+           color = TRUE)
+
+# Save mosaic plot.
+ggsave("~/2023-2024 USC/Spring 2024/QBIO 490/qbio_490_justinwang/week5_genomic/PCLO_Mosiac.png")
+
+# Perform Fisher’s Exact Test.
+fisher <- fisher.test(contig)
+fisher
+
+# Fisher's Exact Test for the contingency table gives a p-value of 0.002978. This is
+# below the threshold of significance, meaning we can reject the null hypothesis that
+# gender and PCLO mutation status are unrelated. In other words, gender and PCLO mutation
+# status are related. 
+#
+# The odds ratio indicates that female patients are ~0.558 times (or half) as likely
+# to have a PCLO mutation than male patients.
+```
+
+
+*4*
+Subset your maf_object based on your chosen clinical variable and create a co-lollipop plot of your chosen gene divided between the two different clinical variable possibilities. Include descriptive names on your plot.
+Do you notice any difference in terms of mutations (e.g. sites, types, number) between the two populations?
+```{r}
+# Draw co-lollipop plot.
+lollipopPlot2(m1 = female_maf,
+              m2 = male_maf,
+              m1_name = "Female Patients",
+              m2_name = "Male Patients",
+              gene = "PCLO",
+              showDomainLabel = FALSE)
+
+# Save co-lollipop plot.
+ggsave("~/2023-2024 USC/Spring 2024/QBIO 490/qbio_490_justinwang/week5_genomic/PCLO_coLolli.png")
+
+# Male patients seem to have a broader range of mutation sites and a greater number
+# of mutations, though this may be due to the data's gender bias. Notably, male  
+# patients have a unique frameshift mutation not present in female patients. Otherwise, 
+# male and female patients are relatively consistent in their mutation types, with
+# the overwhelming of mutations being missense.
+```
+
+
+*5*
+Create your Overall_Survival_Status column and create a mafSurvival KM plot based on mutations in your chosen gene.
+Does there seem to be a difference? Hypothesize why or not based on the other analysis you did with the gene above.
+```{r}
+# Create a new column in the clinical dataframe containing patient survival time, as numeric values.
+maf_object@clinical.data$survival_time <- ifelse(maf_object@clinical.data$death_days_to != "[Not Applicable]",
+                                                 maf_object@clinical.data$death_days_to,
+                                                 maf_object@clinical.data$last_contact_days_to)
+maf_object@clinical.data$survival_time <- as.numeric(maf_object@clinical.data$survival_time)
+
+# Create a new column in the clinical dataframe detailing whether a patient has died.
+maf_object@clinical.data$death_event <- ifelse(maf_object@clinical.data$vital_status == "Alive", F, T)
+
+# Draw KM plot.
+mafSurvival(maf = maf_object,
+            genes = "PCLO",
+            time = "survival_time",
+            Status = "death_event",
+            isTCGA = TRUE)
+
+# Save KM plot.
+ggsave("~/2023-2024 USC/Spring 2024/QBIO 490/qbio_490_justinwang/week5_genomic/PCLO_KM.png")
+
+# Given a p-value of 0.509, we cannot reject the null hypothesis that survival 
+# probability is equal between patients with mutant and wild-type PCLO. In other 
+# words, there is no difference in survival probability between these patient groups.
+#
+# Based on the analyses above, it appears as though PCLO mutations are not associated
+# with lower survival rates. Instead, PCLO seems to mutate more prevalently in
+# male populations, as compared to female populations. It may be that PCLO is simply
+# not associated with prognosis for SKCM patients.
+```
