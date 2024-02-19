@@ -1,0 +1,167 @@
+---
+title: "Intro to Transcriptomics"
+author: Nicole Black, Wade Boohar, Kayla Xu
+date: 07/17/22
+updated: 1/12/23
+---
+
+***Deliverables***
+-Upload this R Notebook to your GitHub and submit the link to your Repo on BB.
+-Include any graphs or figures created in this assignment in the folder with your R notebook with descriptive file names.
+
+Since this is an optional partner activity, it is okay if your answers are the same as your partner’s as long as everyone understands it and could explain it in their own words if asked. Each person must individually push their code to Github. *At the top of your R Notebook, write the name of you and your partner(s) as a comment.*
+
+***Complete the following coding activity and answer any following questions as comments in your R Notebook***
+
+In Transcriptomics_Tutorial.Rmd, you learned how to manipulate the SummarizedExperiment data structure, turn it into more readable dataframes, complete basic analysis using those dataframes, and performed a differential expression analysis based on age. Before saving the rna_counts, rna_clinical, and rna_genes however, we masked out any sample that was not a tumor. In this assignment, you will need to reinstantiate the rna_se object and then perform differential expression analysis based on tumor status.
+
+*Pre-Assignment*
+Use knitr function to set your working directory to your analysis_data folder in qbio_490_name.
+```{r}
+ knitr::opts_knit$set(root.dir = normalizePath("/analysis_data/"))
+```
+
+Load all necessary packages and instantiate the rna_se object
+```{r}
+#packages
+library(TCGAbiolinks)
+library(SummarizedExperiment)
+library(DESeq2)
+library(EnhancedVolcano)
+```
+
+```{r}
+#instantiate object
+rna_query <- GDCquery(project ="TCGA-SKCM",
+                      data.category = "Transcriptome Profiling",
+                      data.type = "Gene Expression Quantification",
+                      workflow.type = "STAR - Counts")
+
+#GDCdownload(rna_query)
+rna_se <- GDCprepare(rna_query, directory = "/analysis_data/GDCdata/")
+```
+
+
+*1*
+Perform all data cleaning and label manipulation steps (hint: applying colnames and rownames to make the dataframes more readable)
+
+For rna_clinical:
+```{r}
+# Create dataframe.
+rna_clinical <- as.data.frame(rna_se@colData)
+
+# Remove "nested lists":
+rna_clinical <- subset(rna_clinical, select = -c(treatments, primary_site, disease_type))
+```
+
+For rna_genes:
+```{r}
+# Create dataframe.
+rna_genes <- as.data.frame(rna_se@rowRanges@elementMetadata)
+
+# Update rownames to reflect gene IDs.
+rownames(rna_genes) <- rna_genes$gene_id
+```
+
+For rna_counts:
+```{r}
+# Create dataframe.
+rna_counts <- as.data.frame(rna_se@assays@data$unstranded)
+
+# Update row and column names to reflect gene IDs and patient barcodes.
+rownames(rna_counts) <- rownames(rna_genes)
+colnames(rna_counts) <- rownames(rna_clinical)
+```
+
+
+*2*
+Determine and define your experimental design for the differential expression analysis, comparing patients samples by gender. Control for covariance of age_category OR vital_status. Manipulate those columns so that they are ready for differential expression analysis (hint: what kind of variables are they? what data type are they by default? do you need to handle unknown values?) Filter out genes with a total expression across all patients less than 10.
+```{r}
+# Clean missing data from $vital_status.
+vital_mask <- !rna_clinical$vital_status == "Not Reported"
+rna_clinical <- rna_clinical[vital_mask, ]
+rna_counts <- rna_counts[, vital_mask]
+
+# Factorize $gender and $vital_status.
+rna_clinical$gender <- as.factor(rna_clinical$gender)
+rna_clinical$vital_status <- as.factor(rna_clinical$vital_status)
+
+# Filter genes with a total expression < 10 across all patients.
+exp_mask <- !rowSums(rna_counts) < 10
+rna_counts <- rna_counts[exp_mask, ]
+```
+
+
+*3*
+Perform the differential expression analysis, create a volcano plot, and interpret what genes from each of the 6 sections means (assuming thresholds of -log10padj = 2 and log2FoldChange = 1)
+```{r}
+# Generate DESeq dataset.
+dds <- DESeqDataSetFromMatrix(countData = rna_counts,
+                              colData = rna_clinical,
+                              design= ~vital_status + gender)
+
+# Generate DESeq object.
+dds_obj <- DESeq(dds)
+resultsNames(dds_obj)
+
+# Extract results from DESeq object.
+results <- results(dds_obj, format = "DataFrame", contrast = c("gender", "female", "male"))
+results <- data.frame(results)
+```
+
+Prepare results dataframe for EnhancedVolcano plotting. 
+```{r}
+# Add gene name and -log10(padj) columns
+results$gene_name <- rna_genes$gene_name[exp_mask]
+results$"-log10(padj)" <- -log10(results$padj) 
+
+# Update rownames to match gene IDs.
+row.names(results) <- rna_genes$gene_id[exp_mask]
+
+# View results dataframe. 
+results
+```
+
+
+```{r}
+# Draw volcano plot with customized labels and connectors.
+EnhancedVolcano(results,
+                lab = results$gene_name,
+                x = 'log2FoldChange',
+                y = 'pvalue',
+                title = 'Vital Status: Alive vs Dead',
+                pointSize = 3.0,
+                labSize = 6.0,
+                boxedLabels = TRUE,
+                parseLabels = TRUE,
+                legendPosition = 'bottom',
+                legendLabSize = 14,
+                legendIconSize = 4.0,
+                drawConnectors = TRUE,
+                widthConnectors = 1.0,
+                arrowheads = FALSE,
+                colConnectors = 'black')
+```
+
+
+# Explain what genes from each part of the Volcano Plot mean in terms of their significance and up/down regulation. 
+Top-right genes: 
+These genes are **upregulated** in female patients compared to male patients, and this upregulation **is** statistically significant.
+
+Bottom-right genes: 
+These genes are **upregulated** in female patients compared to male patients, but this upregulation **is not** statistically significant.
+
+Top-left genes: 
+These genes are **downregulated** in female patients compared to male patients, and this downregulation **is** statistically significant.
+
+Bottom-left genes: 
+These genes are **downregulated** in female patients compared to male patients, but this downregulation **is not** statistically significant.
+
+Top-middle genes: 
+These genes are have approximately **equal expression** in female patients compared to male patients, and this equality **is** statistically significant.
+
+Bottom-middle genes: 
+These genes are have approximately **equal expression** in female patients compared to male patients, but this equality **is not** statistically significant.
+
+
+Save the picture of the volcano plot (using either ggsave() or right clicking and manually downloading the image and push this .Rmd and the image to GitHub)
