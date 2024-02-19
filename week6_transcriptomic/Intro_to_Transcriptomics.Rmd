@@ -104,7 +104,7 @@ dds <- DESeqDataSetFromMatrix(countData = rna_counts,
 dds_obj <- DESeq(dds)
 resultsNames(dds_obj)
 
-# Extract results from DESeq object.
+# Extract results from DESeq object, using male patients as a baseline.
 results <- results(dds_obj, format = "DataFrame", contrast = c("gender", "female", "male"))
 results <- data.frame(results)
 ```
@@ -129,7 +129,7 @@ EnhancedVolcano(results,
                 lab = results$gene_name,
                 x = 'log2FoldChange',
                 y = 'pvalue',
-                title = 'Vital Status: Alive vs Dead',
+                title = 'Patient Gender: Female vs Male',
                 pointSize = 3.0,
                 labSize = 6.0,
                 boxedLabels = TRUE,
@@ -158,10 +158,10 @@ Bottom-left genes:
 These genes are **downregulated** in female patients compared to male patients, but this downregulation **is not** statistically significant.
 
 Top-middle genes: 
-These genes are have approximately **equal expression** in female patients compared to male patients, and this equality **is** statistically significant.
+These genes have approximately **equal expression** in female patients compared to male patients, and this equality **is** statistically significant.
 
 Bottom-middle genes: 
-These genes are have approximately **equal expression** in female patients compared to male patients, but this equality **is not** statistically significant.
+These genes have approximately **equal expression** in female patients compared to male patients, but this equality **is not** statistically significant.
 
 
 Save the picture of the volcano plot (using either ggsave() or right clicking and manually downloading the image and push this .Rmd and the image to GitHub)
