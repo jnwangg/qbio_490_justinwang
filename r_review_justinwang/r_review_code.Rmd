@@ -1,0 +1,341 @@
+---
+title: "R Review Project: Code"
+author: "Justin Wang"
+---
+
+# Configuration and Packages
+```{r}
+knitr::opts_knit$set(root.dir = normalizePath("/analysis_data/"))
+```
+
+```{r}
+if (!require("BiocManager", quietly = TRUE))
+install.packages("BiocManager")
+
+if (!require("TCGAbiolinks", quietly = TRUE))
+BiocManager::install("TCGAbiolinks")
+
+if (!require("maftools", quietly = TRUE))
+BiocManager::install("maftools")
+
+if (!require("survival", quietly = TRUE))
+install.packages("survival")
+
+if (!require("survminer", quietly = TRUE))
+install.packages("survminer")
+
+if (!require("ggplot2", quietly = TRUE))
+install.packages("ggplot2")
+
+if (!require("SummarizedExperiment", quietly = TRUE))
+install.packages("SummarizedExperiment")
+
+if (!require("DESeq2", quietly = TRUE))
+install.packages("DESeq2")
+
+if (!require("EnhancedVolcano", quietly = TRUE))
+install.packages("EnhancedVolcano")
+
+library(BiocManager)
+library(TCGAbiolinks)
+library(maftools)
+library(survival)
+library(survminer)
+library(ggplot2)
+library(SummarizedExperiment)
+library(DESeq2)
+library(EnhancedVolcano)
+```
+
+
+# Data Download
+```{r}
+# Download clinical data.
+clin_query <- GDCquery(project = "TCGA-SKCM",
+  data.category = "Clinical",
+  data.type = "Clinical Supplement",
+  data.format = 'BCR Biotab')
+
+# GDCdownload(clin_query, directory = "/analysis_data/GDCdata")
+
+clinical.BCRtab.all <- GDCprepare(clin_query, directory = "/analysis_data/GDCdata/")
+```
+
+```{r}
+# Download RNA expression data.
+rna_query <- GDCquery(project ="TCGA-SKCM",
+  data.category = "Transcriptome Profiling",
+  data.type = "Gene Expression Quantification",
+  workflow.type = "STAR - Counts")
+
+# GDCdownload(rna_query, directory = "/analysis_data/GDCdata/")
+
+rna_se <- GDCprepare(rna_query, directory = "/analysis_data/GDCdata/")
+```
+
+```{r}
+# Download mutation data.
+maf_query <- GDCquery(
+  project = 'TCGA-SKCM',
+  data.category = "Simple Nucleotide Variation",
+  access = "open",
+  data.type = "Masked Somatic Mutation",
+  workflow.type = "Aliquot Ensemble Somatic Variant Merging and Masking"
+)
+
+# GDCdownload(maf_query, directory = "/analysis_data/GDCdata/")
+
+maf <- GDCprepare(maf_query, directory = "/analysis_data/GDCdata/")
+```
+
+```{r}
+# Disinstantiate query objects.
+remove(clin_query, maf_query, rna_query)
+```
+
+
+# Data Cleaning and Preparation
+```{r}
+################################################################################
+# Create clinical dataframe.
+rna_clinical <- as.data.frame(rna_se@colData)
+
+# Remove "nested lists":
+rna_clinical <- subset(rna_clinical, select = -c(treatments, primary_site, disease_type))
+
+# Add $Tumor_Sample_Barcode for use during MAF creation.
+rna_clinical$Tumor_Sample_Barcode <- rna_clinical$patient
+
+################################################################################
+# Create gene dataframe.
+rna_genes <- as.data.frame(rna_se@rowRanges@elementMetadata)
+
+# Update rownames to reflect gene IDs.
+rownames(rna_genes) <- rna_genes$gene_id
+
+################################################################################
+# Create counts dataframe.
+rna_counts <- as.data.frame(rna_se@assays@data$unstranded)
+
+# Update row and column names to reflect gene IDs and patient barcodes.
+rownames(rna_counts) <- rownames(rna_genes)
+colnames(rna_counts) <- rownames(rna_clinical)
+
+################################################################################
+# Select only "Metastatic" or "Primary Solid Tumor" patients.
+tumor_mask <- (rna_clinical$definition %in% c("Metastatic", "Primary solid Tumor"))
+rna_clinical <- rna_clinical[tumor_mask, ]
+rna_counts <- rna_counts[, tumor_mask]
+
+# Rename "Primary solid Tumor" to "Non-Metastatic"
+rna_clinical$definition[rna_clinical$definition == "Primary solid Tumor"] <- "Non-Metastatic"
+
+# Factorize $definition.
+rna_clinical$definition <- as.factor(rna_clinical$definition)
+
+################################################################################
+# Create MAF object.
+maf_object <- read.maf(maf = maf,
+                       clinicalData = rna_clinical,
+                       isTCGA = TRUE)
+
+# Factorize $definition.
+maf_object@clinical.data$definition <- as.factor(maf_object@clinical.data$definition)
+
+################################################################################
+# Disinstantiate temporary objects.
+remove(tumor_mask)
+```
+
+
+# KM Plot
+```{r}
+# Add survival time to clinical dataframe.
+rna_clinical$survival_time <- ifelse(is.na(rna_clinical$days_to_death),
+                                     rna_clinical$days_to_last_follow_up,
+                                     rna_clinical$days_to_death)
+
+# Add death event to clinical dataframe.
+rna_clinical$death_event <- ifelse(rna_clinical$vital_status == "Alive", F, T)
+
+# Generate survival object.
+survival_object <- Surv(time = rna_clinical$survival_time,
+                        event = rna_clinical$death_event)
+
+# Create survival curve.
+fit_object <- survfit(survival_object ~ definition, data = rna_clinical)
+
+# Draw KM plot.
+survplot <- ggsurvplot(fit_object,
+                       pval=TRUE,
+                       ggtheme = theme(plot.margin = unit(c(1,1,1,1), "cm")),
+                       legend = 'right')
+
+KM_plot <- survplot$plot + theme_bw() + theme(axis.title = element_text(size=20), 
+                                              axis.text = element_text(size=16),
+                                              legend.title = element_text(size=14),
+                                              legend.text = element_text(size=12))
+
+KM_plot
+
+################################################################################
+# Disinstantiate temporary objects.
+remove(survival_object, fit_object, survplot)
+```
+
+
+# Co-oncoplot
+```{r}
+# Subset a new MAF object with metastatic patient data.
+meta_mask <- maf_object@clinical.data$definition == "Metastatic"
+meta_barcodes <- maf_object@clinical.data$Tumor_Sample_Barcode[meta_mask]
+meta_maf <- subsetMaf(maf = maf_object,
+                      tsb = meta_barcodes)
+
+# Subset a new MAF object with non-metastatic patient data.
+nonmeta_mask <- maf_object@clinical.data$definition == "Non-Metastatic"
+nonmeta_barcodes <- maf_object@clinical.data$Tumor_Sample_Barcode[nonmeta_mask]
+nonmeta_maf <- subsetMaf(maf = maf_object,
+                      tsb = nonmeta_barcodes)
+
+# Draw co-oncoplot by patient gender.
+coOncoplot(m1 = meta_maf, 
+           m2 = nonmeta_maf, 
+           m1Name = "Metastatic Patients", 
+           m2Name = "Non-Metastatic Patients", 
+           borderCol = NA)
+
+################################################################################
+# Disinstantiate temporary objects.
+remove(meta_barcodes, meta_mask, nonmeta_barcodes, nonmeta_mask)
+```
+
+
+# Co-lollipop Plot
+```{r}
+# Chosen Gene: DNAH5
+################################################################################
+# Draw co-lollipop plot.
+lollipopPlot2(m1 = meta_maf,
+              m2 = nonmeta_maf,
+              m1_name = "Metastatic Patients",
+              m2_name = "Non-Metastatic Patients",
+              gene = "DNAH5",
+              showDomainLabel = FALSE)
+```
+
+
+# Somatic Interaction Plots
+```{r}
+# Draw somatic interaction plot for metastatic patients.
+somaticInteractions(maf = meta_maf,
+                    top = 10,
+                    pvalue = c(0.05, 0.1))
+
+# Draw somatic interaction plot for non-metastatic patients.
+somaticInteractions(maf = nonmeta_maf,
+                    top = 10,
+                    pvalue = c(0.05, 0.1))
+```
+
+
+# Differential Expression Analysis and Volcano Plot
+```{r}
+# Filter genes with a total expression < 20 across all patients.
+expr_mask <- !rowSums(rna_counts) < 20
+rna_counts <- rna_counts[expr_mask, ]
+
+# Load radiation and drug dataframes.
+rad_clinical <- clinical.BCRtab.all$clinical_radiation_skcm[-c(1,2),]
+drug_clinical <- clinical.BCRtab.all$clinical_drug_skcm[-c(1,2),]
+
+# Clean missing data from $vital_status.
+vital_mask <- !rna_clinical$vital_status == "Not Reported"
+rna_clinical <- rna_clinical[vital_mask, ]
+rna_counts <- rna_counts[, vital_mask]
+
+# Clean missing data from $race.
+race_mask <- !rna_clinical$race == "not reported"
+rna_clinical <- rna_clinical[race_mask, ]
+rna_counts <- rna_counts[, race_mask]
+
+# One-hot encode radiation treatment for each patient.
+rna_clinical$rad <- ifelse(rna_clinical$patient %in% rad_clinical$bcr_patient_barcode, 1, 0)
+
+# One-hot encode drug treatment types for each patient.
+chemo_list <- unique(drug_clinical[drug_clinical$pharmaceutical_therapy_type == "Chemotherapy", "bcr_patient_barcode"])
+rna_clinical$chemo <- ifelse(rna_clinical$patient %in% chemo_list$bcr_patient_barcode, 1, 0)
+
+immuno_list <- unique(drug_clinical[drug_clinical$pharmaceutical_therapy_type == "Immunotherapy", "bcr_patient_barcode"])
+rna_clinical$immuno <- ifelse(rna_clinical$patient %in% immuno_list$bcr_patient_barcode, 1, 0)
+
+molec_list <- unique(drug_clinical[drug_clinical$pharmaceutical_therapy_type == "Targeted Molecular therapy", "bcr_patient_barcode"])
+rna_clinical$molec <- ifelse(rna_clinical$patient %in% molec_list$bcr_patient_barcode, 1, 0)
+
+vaccine_list <- unique(drug_clinical[drug_clinical$pharmaceutical_therapy_type == "Vaccine", "bcr_patient_barcode"])
+rna_clinical$vaccine <- ifelse(rna_clinical$patient %in% vaccine_list$bcr_patient_barcode, 1, 0)
+
+hormone_list <- unique(drug_clinical[drug_clinical$pharmaceutical_therapy_type == "Hormone Therapy", "bcr_patient_barcode"])
+rna_clinical$hormone <- ifelse(rna_clinical$patient %in% hormone_list$bcr_patient_barcode, 1, 0)
+
+ancillary_list <- unique(drug_clinical[drug_clinical$pharmaceutical_therapy_type == "Ancillary", "bcr_patient_barcode"])
+rna_clinical$ancillary <- ifelse(rna_clinical$patient %in% ancillary_list$bcr_patient_barcode, 1, 0)
+
+# Factorize all covariates.
+rna_clinical$gender <- as.factor(rna_clinical$gender)
+rna_clinical$race <- as.factor(rna_clinical$race)
+rna_clinical$vital_status <- as.factor(rna_clinical$vital_status)
+rna_clinical$rad <- as.factor(rna_clinical$rad)
+rna_clinical$chemo <- as.factor(rna_clinical$chemo)
+rna_clinical$immuno <- as.factor(rna_clinical$immuno)
+rna_clinical$molec <- as.factor(rna_clinical$molec)
+rna_clinical$vaccine <- as.factor(rna_clinical$vaccine)
+rna_clinical$hormone <- as.factor(rna_clinical$hormone)
+rna_clinical$ancillary <- as.factor(rna_clinical$ancillary)
+  
+################################################################################
+# Disinstantiate temporary objects.
+remove(race_mask, vital_mask, chemo_list, immuno_list, molec_list, vaccine_list, hormone_list, ancillary_list)
+
+################################################################################
+# Generate DESeq dataset.
+dds <- DESeqDataSetFromMatrix(countData = rna_counts,
+                              colData = rna_clinical,
+                              design= ~vital_status + gender + race + rad + chemo + immuno + molec + vaccine + hormone + ancillary + definition)
+
+# Generate DESeq object.
+dds_obj <- DESeq(dds)
+resultsNames(dds_obj)
+
+# Extract results from DESeq object, using non-metastatic patients as a baseline.
+results <- results(dds_obj, format = "DataFrame", contrast = c("definition", "Metastatic", "Non-Metastatic"))
+results <- data.frame(results)
+
+# Add gene name and -log10(padj) columns
+results$gene_name <- rna_genes$gene_name[expr_mask]
+results$"-log10(padj)" <- -log10(results$padj) 
+
+# Convert dashes in gene names to underscores.
+results$gene_name <- gsub("-", "_", results$gene_name)
+
+# Update rownames to match gene IDs.
+row.names(results) <- rna_genes$gene_id[expr_mask]
+
+# Draw volcano plot with customized labels and connectors.
+EnhancedVolcano(results,
+                lab = results$gene_name,
+                x = 'log2FoldChange',
+                y = 'pvalue',
+                title = 'Patient Metastasis: Metastatic vs. Non-Metastatic',
+                pointSize = 3.0,
+                labSize = 6.0,
+                boxedLabels = TRUE,
+                parseLabels = TRUE,
+                legendPosition = 'bottom',
+                legendLabSize = 14,
+                legendIconSize = 4.0,
+                drawConnectors = TRUE,
+                widthConnectors = 1.0,
+                arrowheads = FALSE,
+                colConnectors = 'black')
+```
