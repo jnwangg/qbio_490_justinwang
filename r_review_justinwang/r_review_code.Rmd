@@ -5,6 +5,7 @@ author: "Justin Wang"
 
 # Configuration and Packages
 ```{r}
+# Modify this path as needed. Should contain downloaded TCGA SKCM data.
 knitr::opts_knit$set(root.dir = normalizePath("/analysis_data/"))
 ```
 
@@ -149,7 +150,7 @@ remove(tumor_mask)
 
 
 # KM Plot
-```{r}
+```{r, fig.width = 10, fig.height = 3.5}
 # Add survival time to clinical dataframe.
 rna_clinical$survival_time <- ifelse(is.na(rna_clinical$days_to_death),
                                      rna_clinical$days_to_last_follow_up,
@@ -185,7 +186,7 @@ remove(survival_object, fit_object, survplot)
 
 
 # Co-oncoplot
-```{r}
+```{r, fig.width = 11, fig.height = 3.5}
 # Subset a new MAF object with metastatic patient data.
 meta_mask <- maf_object@clinical.data$definition == "Metastatic"
 meta_barcodes <- maf_object@clinical.data$Tumor_Sample_Barcode[meta_mask]
@@ -201,9 +202,10 @@ nonmeta_maf <- subsetMaf(maf = maf_object,
 # Draw co-oncoplot by patient gender.
 coOncoplot(m1 = meta_maf, 
            m2 = nonmeta_maf, 
-           m1Name = "Metastatic Patients", 
-           m2Name = "Non-Metastatic Patients", 
-           borderCol = NA)
+           m1Name = "Metastatic", 
+           m2Name = "Non-Metastatic", 
+           borderCol = NA,
+           gene_mar = 1.5)
 
 ################################################################################
 # Disinstantiate temporary objects.
@@ -212,7 +214,7 @@ remove(meta_barcodes, meta_mask, nonmeta_barcodes, nonmeta_mask)
 
 
 # Co-lollipop Plot
-```{r}
+```{r, fig.width = 8, fig.height = 3.5}
 # Chosen Gene: DNAH5
 ################################################################################
 # Draw co-lollipop plot.
@@ -220,7 +222,7 @@ lollipopPlot2(m1 = meta_maf,
               m2 = nonmeta_maf,
               m1_name = "Metastatic Patients",
               m2_name = "Non-Metastatic Patients",
-              gene = "DNAH5",
+              gene = "BRAF",
               showDomainLabel = FALSE)
 ```
 
@@ -230,12 +232,16 @@ lollipopPlot2(m1 = meta_maf,
 # Draw somatic interaction plot for metastatic patients.
 somaticInteractions(maf = meta_maf,
                     top = 10,
-                    pvalue = c(0.05, 0.1))
+                    pvalue = c(0.05, 0.1),
+                    leftMar = 5,
+                    topMar = 5)
 
 # Draw somatic interaction plot for non-metastatic patients.
 somaticInteractions(maf = nonmeta_maf,
                     top = 10,
-                    pvalue = c(0.05, 0.1))
+                    pvalue = c(0.05, 0.1),
+                    leftMar = 5,
+                    topMar = 5)
 ```
 
 
